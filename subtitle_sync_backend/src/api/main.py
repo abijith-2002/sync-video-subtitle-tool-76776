@@ -8,6 +8,38 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uuid
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+# ------- Custom Max Upload Size Middleware -------
+class MaxUploadSizeMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to limit the maximum upload size.
+    Allows setting via env variable MAX_UPLOAD_SIZE_MB (default 1024MB = 1GB).
+    """
+    async def dispatch(self, request: Request, call_next):
+        max_body_size = int(os.getenv("MAX_UPLOAD_SIZE_MB", "1024")) * 1024 * 1024  # Default: 1GB
+        size = 0
+        try:
+            body = b""
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > max_body_size:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"Payload too large. Limit is {max_body_size // (1024 * 1024)} MB. Set MAX_UPLOAD_SIZE_MB env variable to change."}
+                    )
+                body += chunk
+            async def receive():
+                return {"type": "http.request", "body": body}
+            request._receive = receive
+        except Exception as exc:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=500, content={"detail": str(exc)})
+        response = await call_next(request)
+        return response
+
 app = FastAPI(
     title="Subtitle Sync Tool API",
     description="Backend API for uploading, analyzing, and correcting subtitle and video file sync issues.",
@@ -16,6 +48,9 @@ app = FastAPI(
         {"name": "sync", "description": "Endpoints to upload files, check and fix subtitle sync, and download outputs."}
     ]
 )
+
+# Insert max upload size middleware before CORS
+app.add_middleware(MaxUploadSizeMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
